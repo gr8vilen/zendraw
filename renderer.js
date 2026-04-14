@@ -106,10 +106,8 @@ ipcRenderer.on('draw-start', (event, data) => {
     ctx.moveTo(data.x * window.innerWidth, data.y * window.innerHeight);
     ctx.strokeStyle = currentStrokeColor;
     ctx.lineWidth = currentStrokeSize * (pressure * 2);
-    
-    // Auto-hide UI when drawing starts
+
     uiLayer.classList.add('hidden');
-    // Hide cursor dot when drawing
     cursorDot.style.opacity = '0';
 });
 
@@ -117,17 +115,14 @@ let hoverTimeout;
 
 ipcRenderer.on('hover-move', (event, data) => {
     if (isDrawing) return;
-    
-    // Clear existing timeout
     clearTimeout(hoverTimeout);
-    
+
     cursorDot.style.left = `${data.x * 100}%`;
     cursorDot.style.top = `${data.y * 100}%`;
     cursorDot.style.opacity = '1';
     cursorDot.style.borderColor = data.color || 'white';
     cursorDot.style.boxShadow = `0 0 10px ${data.color || 'white'}`;
 
-    // Auto-hide if no move received for 500ms
     hoverTimeout = setTimeout(() => {
         cursorDot.style.opacity = '0';
     }, 500);
@@ -141,13 +136,11 @@ ipcRenderer.on('hover-end', () => {
 ipcRenderer.on('draw-move', (event, data) => {
     if (!isDrawing) return;
     const pressure = data.pressure || 0.5;
-    
-    // To support variable thickness, we stroke each segment
+
     ctx.lineTo(data.x * window.innerWidth, data.y * window.innerHeight);
     ctx.lineWidth = currentStrokeSize * (pressure * 2);
     ctx.stroke();
-    
-    // Start next segment with same position
+
     ctx.beginPath();
     ctx.moveTo(data.x * window.innerWidth, data.y * window.innerHeight);
 });

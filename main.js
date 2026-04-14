@@ -59,7 +59,7 @@ function createTray() {
 
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.size;
+  const { width, height, x, y } = primaryDisplay.bounds;
 
   const iconPath = path.join(__dirname, 'icon.png');
   const appIcon = nativeImage.createFromPath(iconPath);
@@ -67,14 +67,15 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width,
     height,
-    x: 0,
-    y: 0,
+    x,
+    y,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
     resizable: false,
     movable: false,
+    roundedCorners: false, // Ensure edges are sharp and aligned
     skipTaskbar: false,
     icon: appIcon, // Set taskbar icon
     webPreferences: {
@@ -115,7 +116,13 @@ function createWindow() {
   qrcode.toDataURL(url, (err, qrData) => {
     if (err) console.error(err);
     mainWindow.webContents.on('did-finish-load', () => {
-      mainWindow.webContents.send('init-data', { url, qrData });
+      // Send dimensions so mobile can align perfectly
+      mainWindow.webContents.send('init-data', { 
+        url, 
+        qrData, 
+        desktopWidth: width, 
+        desktopHeight: height 
+      });
     });
   });
 }
@@ -128,6 +135,13 @@ io.on('connection', (socket) => {
   console.log(`Mobile connected. Total: ${connectedClients}`);
   mainWindow.webContents.send('connection-status', { connected: true, count: connectedClients });
   
+  // Send desktop proportions to mobile immediately
+  const primaryDisplay = screen.getPrimaryDisplay();
+  socket.emit('init', {
+    width: primaryDisplay.size.width,
+    height: primaryDisplay.size.height
+  });
+
   socket.on('draw-start', (data) => {
     mainWindow.webContents.send('draw-start', data);
   });

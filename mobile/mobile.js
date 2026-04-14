@@ -3,108 +3,142 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const clearBtn = document.getElementById('clearBtn');
 const colorDots = document.querySelectorAll('.color-dot');
+const stylusBtn = document.getElementById('stylusBtn');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+const screenStream = document.getElementById('screen-stream');
 
 let isDrawing = false;
 let currentColor = '#ef4444';
 let currentSize = 8;
 let isStylusMode = false;
-const stylusBtn = document.getElementById('stylusBtn');
-const fullscreenBtn = document.getElementById('fullscreenBtn');
-const screenStream = document.getElementById('screen-stream');
+
+// ------------------------------------------------------------------
+// STREAM RECEIVER
+// ------------------------------------------------------------------
+let desktopWidth = 1920;
+let desktopHeight = 1080;
+let hasDesktopDim = false;
+
+socket.on('init', (data) => {
+    desktopWidth = data.width;
+    desktopHeight = data.height;
+    hasDesktopDim = true;
+    alignCanvasWithStream();
+});
 
 socket.on('stream-frame', (frameData) => {
     screenStream.src = frameData;
 });
 
-let lastRatio = 0;
-
+// ------------------------------------------------------------------
+// CANVAS ALIGNMENT
+// Positions the drawing canvas EXACTLY over the visible part of the
+// 'contained' stream image (no stretching, same math as CSS contain).
+// ------------------------------------------------------------------
 function alignCanvasWithStream() {
-    const img = screenStream;
-    if (!img.naturalWidth || !img.naturalHeight) return;
+    const imgRatio = hasDesktopDim ? (desktopWidth / desktopHeight) : (screenStream.naturalWidth / screenStream.naturalHeight);
+    if (!imgRatio || isNaN(imgRatio)) return;
 
-    const imgRatio = img.naturalWidth / img.naturalHeight;
-    if (Math.abs(lastRatio - imgRatio) < 0.001) {
-        // Only re-calculate if container size changed
-        if (img.dataset.lastContainerW == window.innerWidth && img.dataset.lastContainerH == window.innerHeight) return;
-    }
-    lastRatio = imgRatio;
-    img.dataset.lastContainerW = window.innerWidth;
-    img.dataset.lastContainerH = window.innerHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const vpRatio  = vw / vh;
 
-    const containerWidth = window.innerWidth;
-    const containerHeight = window.innerHeight;
-    const containerRatio = containerWidth / containerHeight;
-
-    let w, h, top, left;
-    if (imgRatio > containerRatio) {
-        w = containerWidth;
-        h = containerWidth / imgRatio;
-        left = 0;
-        top = (containerHeight - h) / 2;
+    let drawW, drawH, drawLeft, drawTop;
+    if (imgRatio > vpRatio) {
+        // Letterbox — image fills width, black bars top/bottom
+        drawW    = vw;
+        drawH    = vw / imgRatio;
+        drawLeft = 0;
+        drawTop  = (vh - drawH) / 2;
     } else {
-        h = containerHeight;
-        w = containerHeight * imgRatio;
-        top = 0;
-        left = (containerWidth - w) / 2;
+        // Pillarbox — image fills height, black bars left/right
+        drawH    = vh;
+        drawW    = vh * imgRatio;
+        drawTop  = 0;
+        drawLeft = (vw - drawW) / 2;
     }
 
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-    canvas.style.top = `${top}px`;
-    canvas.style.left = `${left}px`;
+    // CSS position — overlays the visible image exactly
+    canvas.style.left   = `${drawLeft}px`;
+    canvas.style.top    = `${drawTop}px`;
+    canvas.style.width  = `${drawW}px`;
+    canvas.style.height = `${drawH}px`;
 
-    canvas.width = w;
-    canvas.height = h;
-    
-    // Reset ctx state after resize
-    ctx.lineCap = 'round';
+    // Canvas pixel resolution
+    canvas.width  = drawW;
+    canvas.height = drawH;
+
+    ctx.lineCap  = 'round';
     ctx.lineJoin = 'round';
 }
 
-// Update src handler to trigger alignment check
-socket.on('stream-frame', (frameData) => {
-    screenStream.src = frameData;
-});
-
-screenStream.onload = alignCanvasWithStream;
+screenStream.addEventListener('load', alignCanvasWithStream);
 window.addEventListener('resize', alignCanvasWithStream);
 
-// Initialize
-alignCanvasWithStream();
+// ------------------------------------------------------------------
+// POINTER EVENTS
+// All coordinates are normalised 0-1 WITHIN the canvas bounding box.
+// ------------------------------------------------------------------
+function getCanvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    // Using pageX/Y to account for any potential scroll-related offsets in mobile browsers
+    const clientX = e.pageX || e.clientX;
+    const clientY = e.pageY || e.clientY;
+    
+    return {
+        x: (clientX - rect.left) / rect.width,
+        y: (clientY - rect.top)  / rect.height
+    };
+}
 
-// Fullscreen Toggle
-fullscreenBtn.addEventListener('click', () => {
-    if (!document.fullscreenElement) {
-        if (document.documentElement.requestFullscreen) {
-            document.documentElement.requestFullscreen();
-        } else if (document.documentElement.mozRequestFullScreen) { // Firefox
-            document.documentElement.mozRequestFullScreen();
-        } else if (document.documentElement.webkitRequestFullscreen) { // Chrome, Safari and Opera
-            document.documentElement.webkitRequestFullscreen();
-        } else if (document.documentElement.msRequestFullscreen) { // IE/Edge
-            document.documentElement.msRequestFullscreen();
+canvas.addEventListener('pointerdown', (e) => {
+    if (isStylusMode && e.pointerType !== 'pen') return;
+    isDrawing = true;
+
+    const { x, y } = getCanvasCoords(e);
+    const pressure  = e.pressure || 0.5;
+    socket.emit('draw-start', { x, y, color: currentColor, size: currentSize, pressure });
+
+    ctx.beginPath();
+    ctx.moveTo(x * canvas.width, y * canvas.height);
+    ctx.strokeStyle = currentColor;
+    ctx.lineWidth   = currentSize * (pressure * 2);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+    const { x, y } = getCanvasCoords(e);
+
+    if (!isDrawing) {
+        if (e.pointerType === 'pen') {
+            socket.emit('hover-move', { x, y, color: currentColor });
         }
-    } else {
-        if (document.exitFullscreen) {
-            document.exitFullscreen();
-        } else if (document.mozCancelFullScreen) {
-            document.mozCancelFullScreen();
-        } else if (document.webkitExitFullscreen) {
-            document.webkitExitFullscreen();
-        } else if (document.msExitFullscreen) {
-            document.msExitFullscreen();
-        }
+        return;
     }
+    if (isStylusMode && e.pointerType !== 'pen') return;
+
+    const pressure = e.pressure || 0.5;
+    socket.emit('draw-move', { x, y, pressure });
+
+    ctx.lineWidth = currentSize * (pressure * 2);
+    ctx.lineTo(x * canvas.width, y * canvas.height);
+    ctx.stroke();
 });
 
-// Stylus Mode Toggle (Palm Rejection)
-stylusBtn.addEventListener('click', () => {
-    isStylusMode = !isStylusMode;
-    stylusBtn.classList.toggle('active', isStylusMode);
-    alert(isStylusMode ? "Stylus Mode Active: Only Pen will draw." : "Touch Mode Active");
+['pointerup', 'pointerleave', 'pointerout', 'pointercancel'].forEach(evt => {
+    canvas.addEventListener(evt, () => {
+        socket.emit('hover-end');
+        if (!isDrawing) return;
+        if (evt === 'pointerup') {
+            isDrawing = false;
+            socket.emit('draw-end');
+            ctx.closePath();
+        }
+    });
 });
 
-// Color Selection
+// ------------------------------------------------------------------
+// CONTROLS
+// ------------------------------------------------------------------
 colorDots.forEach(dot => {
     dot.addEventListener('click', () => {
         colorDots.forEach(d => d.classList.remove('active'));
@@ -113,63 +147,24 @@ colorDots.forEach(dot => {
     });
 });
 
-// Pointer Events (Support touch & Apple Pencil)
-canvas.addEventListener('pointerdown', (e) => {
-    if (isStylusMode && e.pointerType !== 'pen') return;
-    
-    isDrawing = true;
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const pressure = e.pressure || 0.5;
-    
-    socket.emit('draw-start', { x, y, color: currentColor, size: currentSize, pressure });
-    
-    ctx.beginPath();
-    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentSize * (pressure * 2);
+stylusBtn.addEventListener('click', () => {
+    isStylusMode = !isStylusMode;
+    stylusBtn.classList.toggle('active', isStylusMode);
+    alert(isStylusMode ? "Stylus Mode: Only Pen draws." : "Touch Mode Active");
 });
 
-canvas.addEventListener('pointermove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-
-    if (!isDrawing) {
-        if (e.pointerType === 'pen') {
-            socket.emit('hover-move', { x, y, color: currentColor });
-        }
-        return;
+fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+        (document.documentElement.requestFullscreen
+            || document.documentElement.webkitRequestFullscreen
+            || document.documentElement.mozRequestFullScreen
+        ).call(document.documentElement);
+    } else {
+        (document.exitFullscreen
+            || document.webkitExitFullscreen
+            || document.mozCancelFullScreen
+        ).call(document);
     }
-    
-    if (isStylusMode && e.pointerType !== 'pen') return;
-    
-    const pressure = e.pressure || 0.5;
-    socket.emit('draw-move', { x, y, pressure });
-    
-    ctx.lineWidth = currentSize * (pressure * 2);
-    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
-    ctx.stroke();
-});
-
-canvas.addEventListener('pointerleave', () => {
-    socket.emit('hover-end');
-});
-
-canvas.addEventListener('pointerout', () => {
-    socket.emit('hover-end');
-});
-
-canvas.addEventListener('pointercancel', () => {
-    socket.emit('hover-end');
-});
-
-canvas.addEventListener('pointerup', () => {
-    if (!isDrawing) return;
-    isDrawing = false;
-    socket.emit('draw-end');
-    ctx.closePath();
 });
 
 clearBtn.addEventListener('click', () => {
@@ -177,7 +172,8 @@ clearBtn.addEventListener('click', () => {
     socket.emit('clear');
 });
 
-// Prevent scrolling on mobile
 document.body.addEventListener('touchstart', (e) => {
-    if (e.target.tagName !== 'BUTTON') e.preventDefault();
+    if (e.target.tagName !== 'BUTTON' && e.target.className !== 'color-dot') {
+        e.preventDefault();
+    }
 }, { passive: false });
