@@ -43,16 +43,18 @@ async function startScreenStream() {
             const captureCanvas = document.createElement('canvas');
             const captureCtx = captureCanvas.getContext('2d');
             
-            // USE ACTUAL VIDEO SOURCE DIMENSIONS
+            // HIGHER RESOLUTION FOR CLARITY
             const streamRatio = video.videoHeight / video.videoWidth;
-            captureCanvas.width = 1000; 
-            captureCanvas.height = 1000 * streamRatio;
+            captureCanvas.width = 1280; 
+            captureCanvas.height = 1280 * streamRatio;
 
+            // SMOOTHER FRAME RATE (Aiming for ~16 FPS)
             setInterval(() => {
                 captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-                const frameData = captureCanvas.toDataURL('image/jpeg', 0.4); 
+                // Higher quality (0.7) for better visibility
+                const frameData = captureCanvas.toDataURL('image/jpeg', 0.7); 
                 ipcRenderer.send('send-frame', frameData);
-            }, 200);
+            }, 60); // 60ms interval
         };
     } catch (e) {
         console.error('Failed to start screen stream:', e);
