@@ -24,36 +24,60 @@ resize();
 let captureCanvas, captureCtx, captureVideo;
 let streaming = false;
 
-async function startScreenStream() {
+async function startScreenStream(targetDisplayId = null) {
     try {
         const sources = await ipcRenderer.invoke('get-sources');
-        const primarySource = sources[0];
+        
+        // Find selected display or default to primary
+        let selectedSource;
+        if (targetDisplayId) {
+            selectedSource = sources.find(s => s.display_id === targetDisplayId.toString());
+        }
+        
+        if (!selectedSource) {
+            selectedSource = sources[0]; // Fallback to first source
+        }
+
+        // Stop existing stream if any
+        if (captureVideo && captureVideo.srcObject) {
+            captureVideo.srcObject.getTracks().forEach(track => track.stop());
+        }
 
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
                 mandatory: {
                     chromeMediaSource: 'desktop',
-                    chromeMediaSourceId: primarySource.id
+                    chromeMediaSourceId: selectedSource.id,
+                    minWidth: 1280,
+                    maxWidth: 4000,
+                    minHeight: 720,
+                    maxHeight: 4000
                 }
             }
         });
 
-        captureVideo = document.createElement('video');
+        if (!captureVideo) {
+            captureVideo = document.createElement('video');
+        }
         captureVideo.srcObject = stream;
         captureVideo.play();
 
         captureVideo.onloadedmetadata = () => {
-            captureCanvas = document.createElement('canvas');
-            captureCtx = captureCanvas.getContext('2d');
+            if (!captureCanvas) {
+                captureCanvas = document.createElement('canvas');
+                captureCtx = captureCanvas.getContext('2d');
+            }
 
             // Use full native video dimensions
             captureCanvas.width  = captureVideo.videoWidth;
             captureCanvas.height = captureVideo.videoHeight;
 
-            streaming = true;
-            captureLoop();
-            console.log(`Streaming at ${captureVideo.videoWidth}x${captureVideo.videoHeight}`);
+            if (!streaming) {
+                streaming = true;
+                captureLoop();
+            }
+            console.log(`Streaming source ${selectedSource.name} at ${captureVideo.videoWidth}x${captureVideo.videoHeight}`);
         };
     } catch (e) {
         console.error('Screen capture failed:', e);
@@ -109,6 +133,11 @@ ipcRenderer.on('connection-status', (event, { connected, count }) => {
         uiLayer.classList.remove('hidden'); // Show QR when disconnected
     }
     updateUIVisibility();
+});
+
+ipcRenderer.on('switch-monitor', (event, displayId) => {
+    console.log(`Renderer: switching to monitor ${displayId}`);
+    startScreenStream(displayId);
 });
 
 let currentStrokeColor = '#ff0000';

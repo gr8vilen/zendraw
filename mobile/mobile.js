@@ -6,11 +6,14 @@ const colorDots = document.querySelectorAll('.color-dot');
 const stylusBtn = document.getElementById('stylusBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const remoteVideo = document.getElementById('remote-video');
+const monitorBtn = document.getElementById('monitorBtn');
+const monitorList = document.getElementById('monitor-list');
 
 let isDrawing = false;
 let currentColor = '#ef4444';
 let currentSize = 8;
 let isStylusMode = false;
+let currentMonitorId = null;
 
 // ------------------------------------------------------------------
 // STREAM RECEIVER — JPEG over Socket.io
@@ -19,6 +22,10 @@ const screenStream = document.getElementById('screen-stream');
 
 socket.on('stream-frame', (frameData) => {
     screenStream.src = frameData;
+});
+
+socket.on('clear', () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 });
 
 // ------------------------------------------------------------------
@@ -33,7 +40,32 @@ socket.on('init', (data) => {
     desktopHeight = data.height;
     hasDesktopDim = true;
     alignCanvasWithStream();
+
+    if (data.displays) {
+        populateMonitorList(data.displays);
+    }
 });
+
+function populateMonitorList(displays) {
+    monitorList.innerHTML = '';
+    displays.forEach(d => {
+        const item = document.createElement('div');
+        item.className = `monitor-item ${d.isPrimary && !currentMonitorId ? 'active' : (currentMonitorId === d.id ? 'active' : '')}`;
+        item.innerHTML = `
+            <span>${d.label}</span>
+            <span class="res">${d.width}x${d.height}</span>
+        `;
+        item.onclick = () => {
+            currentMonitorId = d.id;
+            socket.emit('select-monitor', d.id);
+            monitorList.classList.remove('show');
+            // Optimistically update active state
+            document.querySelectorAll('.monitor-item').forEach(i => i.classList.remove('active'));
+            item.classList.add('active');
+        };
+        monitorList.appendChild(item);
+    });
+}
 
 // ------------------------------------------------------------------
 // CANVAS ALIGNMENT
@@ -163,6 +195,17 @@ fullscreenBtn.addEventListener('click', () => {
 clearBtn.addEventListener('click', () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     socket.emit('clear');
+});
+
+monitorBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    monitorList.classList.toggle('show');
+});
+
+document.addEventListener('click', (e) => {
+    if (!monitorList.contains(e.target) && e.target !== monitorBtn) {
+        monitorList.classList.remove('show');
+    }
 });
 
 document.body.addEventListener('touchstart', (e) => {

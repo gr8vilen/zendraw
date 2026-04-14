@@ -137,11 +137,46 @@ io.on('connection', (socket) => {
   console.log(`Mobile connected. Total: ${connectedClients}`);
   mainWindow.webContents.send('connection-status', { connected: true, count: connectedClients });
 
-  // Send desktop screen dimensions immediately so mobile can align canvas
+  // Send desktop screen dimensions and all displays immediately so mobile can align canvas and allow selection
+  const displays = screen.getAllDisplays().map((d, index) => ({
+    id: d.id,
+    label: `Monitor ${index + 1}${d.id === screen.getPrimaryDisplay().id ? ' (Primary)' : ''}`,
+    width: d.size.width,
+    height: d.size.height,
+    isPrimary: d.id === screen.getPrimaryDisplay().id
+  }));
+
   const primaryDisplay = screen.getPrimaryDisplay();
   socket.emit('init', {
     width: primaryDisplay.size.width,
-    height: primaryDisplay.size.height
+    height: primaryDisplay.size.height,
+    displays: displays
+  });
+
+  // --- Monitor selection ---
+  socket.on('select-monitor', (displayId) => {
+    console.log(`Switching to monitor: ${displayId}`);
+    const targetDisplay = screen.getAllDisplays().find(d => d.id === parseInt(displayId));
+    
+    if (targetDisplay) {
+      const { x, y, width, height } = targetDisplay.bounds;
+      
+      // Move and resize main window to match target display
+      mainWindow.setBounds({ x, y, width, height });
+      
+      // Notify renderer to switch capture source and clear canvas
+      mainWindow.webContents.send('switch-monitor', displayId);
+      mainWindow.webContents.send('clear');
+      
+      // Notify mobile of new dimensions
+      socket.emit('init', {
+        width: targetDisplay.size.width,
+        height: targetDisplay.size.height,
+        displays: displays // Send updated list if needed
+      });
+      // Also notify mobile to clear its canvas
+      socket.emit('clear');
+    }
   });
 
   // --- Drawing events ---
