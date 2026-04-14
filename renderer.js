@@ -20,11 +20,14 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// Screen Streaming Logic
+// Screen Streaming — JPEG over Socket (simple & reliable)
+let captureCanvas, captureCtx, captureVideo;
+let streaming = false;
+
 async function startScreenStream() {
     try {
         const sources = await ipcRenderer.invoke('get-sources');
-        const primarySource = sources[0]; // Assume first screen is primary
+        const primarySource = sources[0];
 
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: false,
@@ -36,29 +39,43 @@ async function startScreenStream() {
             }
         });
 
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            video.play();
-            const captureCanvas = document.createElement('canvas');
-            const captureCtx = captureCanvas.getContext('2d');
-            
-            // HIGHER RESOLUTION FOR CLARITY
-            const streamRatio = video.videoHeight / video.videoWidth;
-            captureCanvas.width = 1280; 
-            captureCanvas.height = 1280 * streamRatio;
+        captureVideo = document.createElement('video');
+        captureVideo.srcObject = stream;
+        captureVideo.play();
 
-            // SMOOTHER FRAME RATE (Aiming for ~16 FPS)
-            setInterval(() => {
-                captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-                // Higher quality (0.7) for better visibility
-                const frameData = captureCanvas.toDataURL('image/jpeg', 0.7); 
-                ipcRenderer.send('send-frame', frameData);
-            }, 60); // 60ms interval
+        captureVideo.onloadedmetadata = () => {
+            captureCanvas = document.createElement('canvas');
+            captureCtx = captureCanvas.getContext('2d');
+
+            // Use full native video dimensions
+            captureCanvas.width  = captureVideo.videoWidth;
+            captureCanvas.height = captureVideo.videoHeight;
+
+            streaming = true;
+            captureLoop();
+            console.log(`Streaming at ${captureVideo.videoWidth}x${captureVideo.videoHeight}`);
         };
     } catch (e) {
-        console.error('Failed to start screen stream:', e);
+        console.error('Screen capture failed:', e);
     }
+}
+
+let lastFrameTime = 0;
+const TARGET_FPS = 15;
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
+
+function captureLoop() {
+    if (!streaming) return;
+    requestAnimationFrame((now) => {
+        if (now - lastFrameTime >= FRAME_INTERVAL) {
+            lastFrameTime = now;
+            captureCtx.drawImage(captureVideo, 0, 0);
+            // Scale down for transmission while keeping quality high
+            const frameData = captureCanvas.toDataURL('image/jpeg', 0.75);
+            ipcRenderer.send('send-frame', frameData);
+        }
+        captureLoop();
+    });
 }
 
 startScreenStream();

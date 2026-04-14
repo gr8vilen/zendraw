@@ -5,7 +5,7 @@ const clearBtn = document.getElementById('clearBtn');
 const colorDots = document.querySelectorAll('.color-dot');
 const stylusBtn = document.getElementById('stylusBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
-const screenStream = document.getElementById('screen-stream');
+const remoteVideo = document.getElementById('remote-video');
 
 let isDrawing = false;
 let currentColor = '#ef4444';
@@ -13,7 +13,16 @@ let currentSize = 8;
 let isStylusMode = false;
 
 // ------------------------------------------------------------------
-// STREAM RECEIVER
+// STREAM RECEIVER — JPEG over Socket.io
+// ------------------------------------------------------------------
+const screenStream = document.getElementById('screen-stream');
+
+socket.on('stream-frame', (frameData) => {
+    screenStream.src = frameData;
+});
+
+// ------------------------------------------------------------------
+// DESKTOP DIMENSIONS (for canvas alignment)
 // ------------------------------------------------------------------
 let desktopWidth = 1920;
 let desktopHeight = 1080;
@@ -26,48 +35,32 @@ socket.on('init', (data) => {
     alignCanvasWithStream();
 });
 
-socket.on('stream-frame', (frameData) => {
-    screenStream.src = frameData;
-});
-
 // ------------------------------------------------------------------
 // CANVAS ALIGNMENT
-// Positions the drawing canvas EXACTLY over the visible part of the
-// 'contained' stream image (no stretching, same math as CSS contain).
 // ------------------------------------------------------------------
 function alignCanvasWithStream() {
-    const imgRatio = hasDesktopDim ? (desktopWidth / desktopHeight) : (screenStream.naturalWidth / screenStream.naturalHeight);
+    const imgRatio = hasDesktopDim
+        ? (desktopWidth / desktopHeight)
+        : (screenStream.naturalWidth && screenStream.naturalWidth / screenStream.naturalHeight);
     if (!imgRatio || isNaN(imgRatio)) return;
 
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const vpRatio  = vw / vh;
+    const vpRatio = vw / vh;
 
     let drawW, drawH, drawLeft, drawTop;
     if (imgRatio > vpRatio) {
-        // Letterbox — image fills width, black bars top/bottom
-        drawW    = vw;
-        drawH    = vw / imgRatio;
-        drawLeft = 0;
-        drawTop  = (vh - drawH) / 2;
+        drawW = vw; drawH = vw / imgRatio; drawLeft = 0; drawTop = (vh - drawH) / 2;
     } else {
-        // Pillarbox — image fills height, black bars left/right
-        drawH    = vh;
-        drawW    = vh * imgRatio;
-        drawTop  = 0;
-        drawLeft = (vw - drawW) / 2;
+        drawH = vh; drawW = vh * imgRatio; drawTop = 0; drawLeft = (vw - drawW) / 2;
     }
 
-    // CSS position — overlays the visible image exactly
     canvas.style.left   = `${drawLeft}px`;
     canvas.style.top    = `${drawTop}px`;
     canvas.style.width  = `${drawW}px`;
     canvas.style.height = `${drawH}px`;
-
-    // Canvas pixel resolution
     canvas.width  = drawW;
     canvas.height = drawH;
-
     ctx.lineCap  = 'round';
     ctx.lineJoin = 'round';
 }

@@ -127,58 +127,55 @@ function createWindow() {
   });
 }
 
-// Socket.io for real-time drawing
+// Socket.io for real-time drawing + WebRTC signaling
 let connectedClients = 0;
+let activeSocket = null; // Track the active mobile socket for targeted WebRTC signaling
 
 io.on('connection', (socket) => {
   connectedClients++;
+  activeSocket = socket; // Store reference so ipcMain handlers can target this socket
   console.log(`Mobile connected. Total: ${connectedClients}`);
   mainWindow.webContents.send('connection-status', { connected: true, count: connectedClients });
-  
-  // Send desktop proportions to mobile immediately
+
+  // Send desktop screen dimensions immediately so mobile can align canvas
   const primaryDisplay = screen.getPrimaryDisplay();
   socket.emit('init', {
     width: primaryDisplay.size.width,
     height: primaryDisplay.size.height
   });
 
-  socket.on('draw-start', (data) => {
-    mainWindow.webContents.send('draw-start', data);
+  // --- Drawing events ---
+  socket.on('draw-start', (data) => mainWindow.webContents.send('draw-start', data));
+  socket.on('draw-move',  (data) => mainWindow.webContents.send('draw-move', data));
+  socket.on('draw-end',   ()     => mainWindow.webContents.send('draw-end'));
+  socket.on('hover-move', (data) => mainWindow.webContents.send('hover-move', data));
+  socket.on('hover-end',  ()     => mainWindow.webContents.send('hover-end'));
+  socket.on('clear',      ()     => mainWindow.webContents.send('clear'));
+
+  // --- WebRTC signaling (Mobile → Desktop) ---
+  socket.on('signal-answer', (answer) => {
+    console.log('Got WebRTC answer from mobile');
+    mainWindow.webContents.send('webrtc-answer', answer);
   });
 
-  socket.on('draw-move', (data) => {
-    mainWindow.webContents.send('draw-move', data);
-  });
-
-  socket.on('draw-end', () => {
-    mainWindow.webContents.send('draw-end');
-  });
-
-  socket.on('hover-move', (data) => {
-    mainWindow.webContents.send('hover-move', data);
-  });
-
-  socket.on('hover-end', () => {
-    mainWindow.webContents.send('hover-end');
-  });
-
-  socket.on('clear', () => {
-    mainWindow.webContents.send('clear');
+  socket.on('signal-ice', (candidate) => {
+    mainWindow.webContents.send('webrtc-ice', candidate);
   });
 
   socket.on('disconnect', () => {
     connectedClients--;
+    if (activeSocket === socket) activeSocket = null;
     console.log(`Mobile disconnected. Total: ${connectedClients}`);
-    mainWindow.webContents.send('connection-status', { 
-      connected: connectedClients > 0, 
-      count: connectedClients 
+    mainWindow.webContents.send('connection-status', {
+      connected: connectedClients > 0,
+      count: connectedClients
     });
   });
 });
 
-// Forward screen frames from renderer to mobile (Broadcasting to all connected)
+// Frame forwarding: desktop renderer → mobile
 ipcMain.on('send-frame', (event, frameData) => {
-  io.emit('stream-frame', frameData);
+  if (activeSocket) activeSocket.emit('stream-frame', frameData);
 });
 
 // Serve the mobile controller
