@@ -66,6 +66,51 @@
             background: #ff4d4d;
             color: white;
         }
+        #connection-info.hidden {
+            display: none;
+        }
+        #status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 10px;
+            background: rgba(76, 175, 80, 0.1);
+            color: #2e7d32;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-top: 5px;
+        }
+        #status-badge.hidden {
+            display: none;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #4caf50;
+            border-radius: 50%;
+            box-shadow: 0 0 5px #4caf50;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.6; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.1); }
+            100% { opacity: 0.6; transform: scale(1); }
+        }
+        #cursor-dot {
+            position: fixed;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.5);
+            border: 2px solid white;
+            box-shadow: 0 0 10px rgba(255,255,255,0.8);
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.1s;
+            transform: translate(-50%, -50%);
+        }
     </style>
 </head>
 <body>
@@ -76,11 +121,21 @@
             <button id="min-btn" title="Minimize">─</button>
             <button id="close-btn" title="Quit">×</button>
         </div>
-        <h2>Connect Phone</h2>
-        <img id="qr-code" src="" alt="QR Code">
-        <div id="url-text"></div>
-        <div class="hint">Draw on phone to sketch on screen</div>
+        
+        <div id="connection-info">
+            <h2>Connect Phone</h2>
+            <img id="qr-code" src="" alt="QR Code">
+            <div id="url-text"></div>
+            <div class="hint">Draw on phone to sketch on screen</div>
+        </div>
+
+        <div id="status-badge" class="hidden">
+            <div class="status-dot"></div>
+            <span>Connected</span>
+        </div>
     </div>
+
+    <div id="cursor-dot"></div>
 
     <script src="renderer.js"></script>
 </body>

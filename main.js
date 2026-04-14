@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, Menu, Tray, nativeImage, desktopCapturer } = require('electron');
 const path = require('path');
 const express = require('express');
 const http = require('http');
@@ -61,6 +61,9 @@ function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height } = primaryDisplay.size;
 
+  const iconPath = path.join(__dirname, 'icon.png');
+  const appIcon = nativeImage.createFromPath(iconPath);
+
   mainWindow = new BrowserWindow({
     width,
     height,
@@ -72,12 +75,18 @@ function createWindow() {
     hasShadow: false,
     resizable: false,
     movable: false,
-    skipTaskbar: false, // Ensure it shows in taskbar
+    skipTaskbar: false,
+    icon: appIcon, // Set taskbar icon
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
     }
   });
+
+  // Set Dock icon for Mac
+  if (process.platform === 'darwin') {
+    app.dock.setIcon(appIcon);
+  }
 
   // Mac specific behavior to ensure it stays above but accessible
   mainWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -95,6 +104,10 @@ function createWindow() {
     mainWindow.setIgnoreMouseEvents(ignore, options);
   });
 
+  ipcMain.handle('get-sources', async () => {
+    return await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+  });
+
   // Generate QR Code for mobile connection
   const localIp = ip.address();
   const url = `http://${localIp}:${PORT}`;
@@ -108,8 +121,12 @@ function createWindow() {
 }
 
 // Socket.io for real-time drawing
+let connectedClients = 0;
+
 io.on('connection', (socket) => {
-  console.log('Mobile connected');
+  connectedClients++;
+  console.log(`Mobile connected. Total: ${connectedClients}`);
+  mainWindow.webContents.send('connection-status', { connected: true, count: connectedClients });
   
   socket.on('draw-start', (data) => {
     mainWindow.webContents.send('draw-start', data);
@@ -123,13 +140,31 @@ io.on('connection', (socket) => {
     mainWindow.webContents.send('draw-end');
   });
 
+  socket.on('hover-move', (data) => {
+    mainWindow.webContents.send('hover-move', data);
+  });
+
+  socket.on('hover-end', () => {
+    mainWindow.webContents.send('hover-end');
+  });
+
   socket.on('clear', () => {
     mainWindow.webContents.send('clear');
   });
 
   socket.on('disconnect', () => {
-    console.log('Mobile disconnected');
+    connectedClients--;
+    console.log(`Mobile disconnected. Total: ${connectedClients}`);
+    mainWindow.webContents.send('connection-status', { 
+      connected: connectedClients > 0, 
+      count: connectedClients 
+    });
   });
+});
+
+// Forward screen frames from renderer to mobile (Broadcasting to all connected)
+ipcMain.on('send-frame', (event, frameData) => {
+  io.emit('stream-frame', frameData);
 });
 
 // Serve the mobile controller
