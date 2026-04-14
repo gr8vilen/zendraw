@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ZenDraw Desktop</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-layer {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            z-index: 100;
+            transition: opacity 0.5s ease;
+            pointer-events: auto; /* Allow UI interaction */
+        }
+        #ui-layer.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 14px; color: #333; }
+        #qr-code { width: 120px; height: 120px; margin-bottom: 5px; }
+        #url-text { font-size: 10px; color: #666; word-break: break-all; }
+        .hint { font-size: 9px; margin-top: 5px; color: #888; }
+        .window-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+        }
+        .window-controls button {
+            background: #f0f0f0;
+            border: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            color: #555;
+        }
+        .window-controls button:hover {
+            background: #e0e0e0;
+        }
+        #close-btn:hover {
+            background: #ff4d4d;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    
+    <div id="ui-layer">
+        <div class="window-controls">
+            <button id="min-btn" title="Minimize">─</button>
+            <button id="close-btn" title="Quit">×</button>
+        </div>
+        <h2>Connect Phone</h2>
+        <img id="qr-code" src="" alt="QR Code">
+        <div id="url-text"></div>
+        <div class="hint">Draw on phone to sketch on screen</div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
