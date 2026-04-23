@@ -5,7 +5,6 @@ const clearBtn = document.getElementById('clearBtn');
 const colorDots = document.querySelectorAll('.color-dot');
 const stylusBtn = document.getElementById('stylusBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
-const remoteVideo = document.getElementById('remote-video');
 const monitorBtn = document.getElementById('monitorBtn');
 const monitorList = document.getElementById('monitor-list');
 
@@ -16,12 +15,48 @@ let isStylusMode = false;
 let currentMonitorId = null;
 
 // ------------------------------------------------------------------
-// STREAM RECEIVER — JPEG over Socket.io
+// WEBRTC STREAM RECEIVER
 // ------------------------------------------------------------------
 const screenStream = document.getElementById('screen-stream');
+let mobilePc = null;
 
-socket.on('stream-frame', (frameData) => {
-    screenStream.src = frameData;
+socket.on('signal-offer', async (offer) => {
+    if (mobilePc) { mobilePc.close(); mobilePc = null; }
+
+    mobilePc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    mobilePc.ontrack = (event) => {
+        console.log('WebRTC: track received, attaching to video');
+        screenStream.srcObject = event.streams[0];
+    };
+
+    mobilePc.onicecandidate = ({ candidate }) => {
+        if (candidate) {
+            socket.emit('signal-ice', candidate.toJSON());
+        }
+    };
+
+    mobilePc.onconnectionstatechange = () => {
+        console.log('WebRTC mobile state:', mobilePc.connectionState);
+    };
+
+    try {
+        await mobilePc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await mobilePc.createAnswer();
+        await mobilePc.setLocalDescription(answer);
+        console.log('Mobile: sending answer');
+        socket.emit('signal-answer', mobilePc.localDescription.toJSON());
+    } catch (e) {
+        console.error('Mobile WebRTC error:', e);
+    }
+});
+
+// ICE candidates from desktop
+socket.on('signal-ice-desktop', async (candidate) => {
+    if (!mobilePc) return;
+    try { await mobilePc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { /* ignore */ }
 });
 
 socket.on('clear', () => {
@@ -73,7 +108,7 @@ function populateMonitorList(displays) {
 function alignCanvasWithStream() {
     const imgRatio = hasDesktopDim
         ? (desktopWidth / desktopHeight)
-        : (screenStream.naturalWidth && screenStream.naturalWidth / screenStream.naturalHeight);
+        : (screenStream.videoWidth && screenStream.videoWidth / screenStream.videoHeight);
     if (!imgRatio || isNaN(imgRatio)) return;
 
     const vw = window.innerWidth;
@@ -97,7 +132,7 @@ function alignCanvasWithStream() {
     ctx.lineJoin = 'round';
 }
 
-screenStream.addEventListener('load', alignCanvasWithStream);
+screenStream.addEventListener('loadedmetadata', alignCanvasWithStream);
 window.addEventListener('resize', alignCanvasWithStream);
 
 // ------------------------------------------------------------------
@@ -116,18 +151,46 @@ function getCanvasCoords(e) {
     };
 }
 
+let isErasing = false;
+
 canvas.addEventListener('pointerdown', (e) => {
+    socket.emit('log-pen', { type: e.pointerType, button: e.button, buttons: e.buttons });
+
     if (isStylusMode && e.pointerType !== 'pen') return;
+
+    // Check for "Clear Screen" pen button (button 1 / middle click)
+    if (e.pointerType === 'pen' && (e.button === 1 || (e.buttons & 4))) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        socket.emit('clear');
+        return;
+    }
+
     isDrawing = true;
+    
+    // Check for "Eraser" pen button (button 2 / right click OR button 5 / eraser end)
+    isErasing = (e.pointerType === 'pen' && (e.button === 2 || e.button === 5 || (e.buttons & 2) || (e.buttons & 32)));
 
     const { x, y } = getCanvasCoords(e);
     const pressure  = e.pressure || 0.5;
-    socket.emit('draw-start', { x, y, color: currentColor, size: currentSize, pressure });
+    
+    socket.emit('draw-start', { 
+        x, y, 
+        color: isErasing ? 'erase' : currentColor, 
+        size: isErasing ? 40 : currentSize, // Thicker eraser
+        pressure 
+    });
 
     ctx.beginPath();
     ctx.moveTo(x * canvas.width, y * canvas.height);
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth   = currentSize * (pressure * 2);
+    
+    if (isErasing) {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = 40 * (pressure * 2);
+    } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = currentColor;
+        ctx.lineWidth   = currentSize * (pressure * 2);
+    }
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -144,7 +207,7 @@ canvas.addEventListener('pointermove', (e) => {
     const pressure = e.pressure || 0.5;
     socket.emit('draw-move', { x, y, pressure });
 
-    ctx.lineWidth = currentSize * (pressure * 2);
+    ctx.lineWidth = (isErasing ? 40 : currentSize) * (pressure * 2);
     ctx.lineTo(x * canvas.width, y * canvas.height);
     ctx.stroke();
 });
@@ -157,9 +220,20 @@ canvas.addEventListener('pointermove', (e) => {
             isDrawing = false;
             socket.emit('draw-end');
             ctx.closePath();
+            ctx.globalCompositeOperation = 'source-over'; // reset back to normal
+            isErasing = false;
         }
     });
 });
+
+// Quick Clear Button for collapsed state
+const quickClearBtn = document.getElementById('quickClearBtn');
+if (quickClearBtn) {
+    quickClearBtn.addEventListener('click', () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        socket.emit('clear');
+    });
+}
 
 // ------------------------------------------------------------------
 // CONTROLS
@@ -208,8 +282,76 @@ document.addEventListener('click', (e) => {
     }
 });
 
+// ------------------------------------------------------------------
+// DRAGGABLE & COLLAPSIBLE TOOLBAR
+// ------------------------------------------------------------------
+const controlsWrapper = document.getElementById('controlsWrapper');
+const dragHandle = document.getElementById('dragHandle');
+const toggleBtn = document.getElementById('toggleBtn');
+
+let isDraggingUI = false;
+let startX, startY, initialLeft, initialTop;
+
+dragHandle.addEventListener('touchstart', (e) => {
+    isDraggingUI = true;
+    const touch = e.touches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    
+    // Switch to absolute positioning from transform
+    const rect = controlsWrapper.getBoundingClientRect();
+    controlsWrapper.style.left = `${rect.left}px`;
+    controlsWrapper.style.top = `${rect.top}px`;
+    controlsWrapper.style.transform = 'none';
+    controlsWrapper.style.bottom = 'auto';
+    controlsWrapper.style.right = 'auto';
+    
+    initialLeft = rect.left;
+    initialTop = rect.top;
+    controlsWrapper.classList.add('dragging');
+    e.preventDefault(); // Prevent drawing interference
+});
+
+document.addEventListener('touchmove', (e) => {
+    if (!isDraggingUI) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - startX;
+    const dy = touch.clientY - startY;
+    
+    let newLeft = initialLeft + dx;
+    let newTop = initialTop + dy;
+    
+    // Simple bounds checking
+    const rect = controlsWrapper.getBoundingClientRect();
+    if (newLeft < 0) newLeft = 0;
+    if (newLeft + rect.width > window.innerWidth) newLeft = window.innerWidth - rect.width;
+    if (newTop < 0) newTop = 0;
+    if (newTop + rect.height > window.innerHeight) newTop = window.innerHeight - rect.height;
+
+    controlsWrapper.style.left = `${newLeft}px`;
+    controlsWrapper.style.top = `${newTop}px`;
+}, { passive: false });
+
+document.addEventListener('touchend', () => {
+    if (isDraggingUI) {
+        isDraggingUI = false;
+        controlsWrapper.classList.remove('dragging');
+    }
+});
+
+toggleBtn.addEventListener('click', () => {
+    controlsWrapper.classList.toggle('collapsed');
+    toggleBtn.innerHTML = controlsWrapper.classList.contains('collapsed') ? '⚙️ Tools' : '▼ Hide Tools';
+});
+
+// ------------------------------------------------------------------
 document.body.addEventListener('touchstart', (e) => {
-    if (e.target.tagName !== 'BUTTON' && e.target.className !== 'color-dot') {
+    // Allow default behavior for UI elements (buttons, color dots, monitor list, toolbar wrapper)
+    if (e.target.closest('.controls-wrapper') || e.target.closest('#monitor-list')) {
+        return;
+    }
+    // Prevent default (scrolling/zooming) for canvas and other areas to keep drawing smooth
+    if (e.target === canvas || e.target.tagName === 'BODY' || e.target.tagName === 'HTML') {
         e.preventDefault();
     }
 }, { passive: false });

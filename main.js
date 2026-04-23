@@ -14,7 +14,7 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-const PORT = 3000;
+const PORT = 6991;
 
 function createMenu() {
   const template = [
@@ -96,8 +96,6 @@ function createWindow() {
   // Ignore mouse events by default so we can click through to apps
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
-  mainWindow.loadFile('index.html');
-
   // Handle IPC for window controls
   ipcMain.on('minimize-window', () => mainWindow.minimize());
   ipcMain.on('quit-app', () => app.quit());
@@ -109,14 +107,17 @@ function createWindow() {
     return await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
   });
 
-  // Generate QR Code for mobile connection
-  const localIp = ip.address();
-  const url = `http://${localIp}:${PORT}`;
-  
-  qrcode.toDataURL(url, (err, qrData) => {
-    if (err) console.error(err);
-    mainWindow.webContents.on('did-finish-load', () => {
-      // Send dimensions so mobile can align perfectly
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[Renderer] ${message}`);
+  });
+
+  mainWindow.loadFile('index.html').then(() => {
+    // Generate QR Code for mobile connection
+    const localIp = ip.address();
+    const url = `http://${localIp}:${PORT}`;
+    
+    qrcode.toDataURL(url, (err, qrData) => {
+      if (err) console.error(err);
       mainWindow.webContents.send('init-data', { 
         url, 
         qrData, 
@@ -180,6 +181,7 @@ io.on('connection', (socket) => {
   });
 
   // --- Drawing events ---
+  socket.on('log-pen', (data) => console.log(`[PEN LOG] type: ${data.type}, button: ${data.button}, buttons: ${data.buttons}`));
   socket.on('draw-start', (data) => mainWindow.webContents.send('draw-start', data));
   socket.on('draw-move',  (data) => mainWindow.webContents.send('draw-move', data));
   socket.on('draw-end',   ()     => mainWindow.webContents.send('draw-end'));
@@ -193,7 +195,13 @@ io.on('connection', (socket) => {
     mainWindow.webContents.send('webrtc-answer', answer);
   });
 
+  // Mobile → Desktop ICE
   socket.on('signal-ice', (candidate) => {
+    mainWindow.webContents.send('webrtc-ice', candidate);
+  });
+
+  // Desktop → Mobile ICE (relayed back via socket)
+  socket.on('signal-ice-desktop', (candidate) => {
     mainWindow.webContents.send('webrtc-ice', candidate);
   });
 
@@ -208,9 +216,13 @@ io.on('connection', (socket) => {
   });
 });
 
-// Frame forwarding: desktop renderer → mobile
-ipcMain.on('send-frame', (event, frameData) => {
-  if (activeSocket) activeSocket.emit('stream-frame', frameData);
+// WebRTC signaling relay: desktop renderer → mobile
+ipcMain.on('webrtc-offer', (event, offer) => {
+  if (activeSocket) activeSocket.emit('signal-offer', offer);
+});
+
+ipcMain.on('webrtc-ice-desktop', (event, candidate) => {
+  if (activeSocket) activeSocket.emit('signal-ice-desktop', candidate);
 });
 
 // Serve the mobile controller

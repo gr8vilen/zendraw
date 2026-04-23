@@ -8,7 +8,6 @@ const uiLayer = document.getElementById('ui-layer');
 
 let isDrawing = false;
 
-// Set canvas resolution for Retina screens
 function resize() {
     canvas.width = window.innerWidth * window.devicePixelRatio;
     canvas.height = window.innerHeight * window.devicePixelRatio;
@@ -16,94 +15,83 @@ function resize() {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 }
-
 window.addEventListener('resize', resize);
 resize();
 
-// Screen Streaming — JPEG over Socket (simple & reliable)
-let captureCanvas, captureCtx, captureVideo;
-let streaming = false;
+// ------------------------------------------------------------------
+// SCREEN STREAMING — WebRTC (hardware-accelerated H.264, 25 FPS)
+// ------------------------------------------------------------------
+let pc = null;
+let currentStream = null;
+let currentMonitorId = null;
 
-async function startScreenStream(targetDisplayId = null) {
+async function startWebRTC(targetDisplayId = null) {
+    if (pc) { pc.close(); pc = null; }
+    if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+
     try {
+        console.log(`[Renderer] Initiating WebRTC setup`);
         const sources = await ipcRenderer.invoke('get-sources');
-        
-        // Find selected display or default to primary
-        let selectedSource;
-        if (targetDisplayId) {
-            selectedSource = sources.find(s => s.display_id === targetDisplayId.toString());
-        }
-        
-        if (!selectedSource) {
-            selectedSource = sources[0]; // Fallback to first source
-        }
+        let selectedSource = targetDisplayId
+            ? sources.find(s => s.display_id === targetDisplayId.toString())
+            : null;
+        if (!selectedSource) selectedSource = sources[0];
+        console.log(`[Renderer] WebRTC: using source "${selectedSource.name}"`);
 
-        // Stop existing stream if any
-        if (captureVideo && captureVideo.srcObject) {
-            captureVideo.srcObject.getTracks().forEach(track => track.stop());
-        }
-
-        const stream = await navigator.mediaDevices.getUserMedia({
+        currentStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
                 mandatory: {
                     chromeMediaSource: 'desktop',
                     chromeMediaSourceId: selectedSource.id,
-                    minWidth: 1280,
-                    maxWidth: 4000,
-                    minHeight: 720,
-                    maxHeight: 4000
+                    maxFrameRate: 25,
                 }
             }
         });
 
-        if (!captureVideo) {
-            captureVideo = document.createElement('video');
-        }
-        captureVideo.srcObject = stream;
-        captureVideo.play();
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        currentStream.getTracks().forEach(track => pc.addTrack(track, currentStream));
 
-        captureVideo.onloadedmetadata = () => {
-            if (!captureCanvas) {
-                captureCanvas = document.createElement('canvas');
-                captureCtx = captureCanvas.getContext('2d');
+        // Trickle ICE: send candidates as they are found
+        pc.onicecandidate = ({ candidate }) => {
+            if (candidate) {
+                ipcRenderer.send('webrtc-ice-desktop', candidate.toJSON());
             }
-
-            // Use full native video dimensions
-            captureCanvas.width  = captureVideo.videoWidth;
-            captureCanvas.height = captureVideo.videoHeight;
-
-            if (!streaming) {
-                streaming = true;
-                captureLoop();
-            }
-            console.log(`Streaming source ${selectedSource.name} at ${captureVideo.videoWidth}x${captureVideo.videoHeight}`);
         };
+
+        pc.onconnectionstatechange = () => {
+            console.log(`[Renderer] WebRTC state: ${pc.connectionState}`);
+            if (pc.connectionState === 'failed') {
+                console.warn('[Renderer] WebRTC failed, retrying in 2s...');
+                setTimeout(() => startWebRTC(currentMonitorId), 2000);
+            }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        console.log('[Renderer] WebRTC: Sending offer to mobile');
+        ipcRenderer.send('webrtc-offer', pc.localDescription.toJSON());
     } catch (e) {
-        console.error('Screen capture failed:', e);
+        console.error(`[Renderer] WebRTC setup failed: ${e.message}`);
     }
 }
 
-let lastFrameTime = 0;
-const TARGET_FPS = 15;
-const FRAME_INTERVAL = 1000 / TARGET_FPS;
+ipcRenderer.on('webrtc-answer', async (event, answer) => {
+    if (!pc || pc.signalingState === 'closed') return;
+    try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log('[Renderer] WebRTC: answer applied, stream active');
+    } catch (e) { console.error(`[Renderer] setRemoteDescription failed: ${e.message}`); }
+});
 
-function captureLoop() {
-    if (!streaming) return;
-    requestAnimationFrame((now) => {
-        if (now - lastFrameTime >= FRAME_INTERVAL) {
-            lastFrameTime = now;
-            captureCtx.drawImage(captureVideo, 0, 0);
-            // Scale down for transmission while keeping quality high
-            const frameData = captureCanvas.toDataURL('image/jpeg', 0.75);
-            ipcRenderer.send('send-frame', frameData);
-        }
-        captureLoop();
-    });
-}
+ipcRenderer.on('webrtc-ice', async (event, candidate) => {
+    if (!pc || pc.signalingState === 'closed') return;
+    try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { /* ignore */ }
+});
 
-startScreenStream();
-
+// ------------------------------------------------------------------
 ipcRenderer.on('init-data', (event, { url, qrData }) => {
     document.getElementById('qr-code').src = qrData;
     document.getElementById('url-text').innerText = url;
@@ -126,35 +114,50 @@ ipcRenderer.on('connection-status', (event, { connected, count }) => {
     if (connected) {
         connectionInfo.classList.add('hidden');
         statusBadge.classList.remove('hidden');
-        uiLayer.classList.add('hidden'); // Auto-hide when connected
+        uiLayer.classList.add('hidden');
+        // Small delay ensures mobile JS is ready to receive the offer
+        setTimeout(() => startWebRTC(currentMonitorId), 500);
     } else {
         connectionInfo.classList.remove('hidden');
         statusBadge.classList.add('hidden');
-        uiLayer.classList.remove('hidden'); // Show QR when disconnected
+        uiLayer.classList.remove('hidden');
+        if (pc) { pc.close(); pc = null; }
+        if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
     }
     updateUIVisibility();
 });
 
 ipcRenderer.on('switch-monitor', (event, displayId) => {
     console.log(`Renderer: switching to monitor ${displayId}`);
-    startScreenStream(displayId);
+    currentMonitorId = displayId;
+    startWebRTC(displayId);
 });
 
+// ------------------------------------------------------------------
+// DRAWING
+// ------------------------------------------------------------------
 let currentStrokeColor = '#ff0000';
 let currentStrokeSize = 5;
 const cursorDot = document.getElementById('cursor-dot');
 
 ipcRenderer.on('draw-start', (event, data) => {
     isDrawing = true;
-    currentStrokeColor = data.color || '#ff0000';
-    currentStrokeSize = data.size || 5;
     const pressure = data.pressure || 0.5;
-
+    
     ctx.beginPath();
     ctx.moveTo(data.x * window.innerWidth, data.y * window.innerHeight);
-    ctx.strokeStyle = currentStrokeColor;
-    ctx.lineWidth = currentStrokeSize * (pressure * 2);
-
+    
+    if (data.color === 'erase') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = (data.size || 40) * (pressure * 2);
+    } else {
+        ctx.globalCompositeOperation = 'source-over';
+        currentStrokeColor = data.color || '#ff0000';
+        currentStrokeSize = data.size || 5;
+        ctx.strokeStyle = currentStrokeColor;
+        ctx.lineWidth = currentStrokeSize * (pressure * 2);
+    }
+    
     uiLayer.classList.add('hidden');
     cursorDot.style.opacity = '0';
 });
@@ -164,16 +167,12 @@ let hoverTimeout;
 ipcRenderer.on('hover-move', (event, data) => {
     if (isDrawing) return;
     clearTimeout(hoverTimeout);
-
     cursorDot.style.left = `${data.x * 100}%`;
     cursorDot.style.top = `${data.y * 100}%`;
     cursorDot.style.opacity = '1';
     cursorDot.style.borderColor = data.color || 'white';
     cursorDot.style.boxShadow = `0 0 10px ${data.color || 'white'}`;
-
-    hoverTimeout = setTimeout(() => {
-        cursorDot.style.opacity = '0';
-    }, 500);
+    hoverTimeout = setTimeout(() => { cursorDot.style.opacity = '0'; }, 500);
 });
 
 ipcRenderer.on('hover-end', () => {
@@ -184,64 +183,42 @@ ipcRenderer.on('hover-end', () => {
 ipcRenderer.on('draw-move', (event, data) => {
     if (!isDrawing) return;
     const pressure = data.pressure || 0.5;
-
     ctx.lineTo(data.x * window.innerWidth, data.y * window.innerHeight);
     ctx.lineWidth = currentStrokeSize * (pressure * 2);
     ctx.stroke();
-
     ctx.beginPath();
     ctx.moveTo(data.x * window.innerWidth, data.y * window.innerHeight);
 });
 
-ipcRenderer.on('draw-end', () => {
-    isDrawing = false;
-    ctx.closePath();
-});
+ipcRenderer.on('draw-end', () => { isDrawing = false; ctx.closePath(); });
 
 ipcRenderer.on('clear', () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Only show UI if disconnected
-    if (!isConnected) {
-        uiLayer.classList.remove('hidden');
-    }
+    if (!isConnected) uiLayer.classList.remove('hidden');
 });
 
-// Window interaction handling
-uiLayer.addEventListener('mouseenter', () => {
-    ipcRenderer.send('set-ignore-mouse-events', false);
-});
-
+// ------------------------------------------------------------------
+// WINDOW INTERACTION
+// ------------------------------------------------------------------
+uiLayer.addEventListener('mouseenter', () => ipcRenderer.send('set-ignore-mouse-events', false));
 uiLayer.addEventListener('mouseleave', () => {
-    // Only go back to ignore if UI is NOT visible (or if it's hidden)
-    if (uiLayer.classList.contains('hidden')) {
+    if (uiLayer.classList.contains('hidden'))
         ipcRenderer.send('set-ignore-mouse-events', true, { forward: true });
-    }
 });
 
-// Button handlers
-document.getElementById('min-btn').addEventListener('click', () => {
-    ipcRenderer.send('minimize-window');
-});
+document.getElementById('min-btn').addEventListener('click', () => ipcRenderer.send('minimize-window'));
+document.getElementById('close-btn').addEventListener('click', () => ipcRenderer.send('quit-app'));
 
-document.getElementById('close-btn').addEventListener('click', () => {
-    ipcRenderer.send('quit-app');
-});
-
-// Toggle UI with Spacebar
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
         uiLayer.classList.toggle('hidden');
-        // If UI is hidden, ensure we ignore mouse
-        if (uiLayer.classList.contains('hidden')) {
+        if (uiLayer.classList.contains('hidden'))
             ipcRenderer.send('set-ignore-mouse-events', true, { forward: true });
-        } else {
+        else
             ipcRenderer.send('set-ignore-mouse-events', false);
-        }
     }
     if (e.code === 'KeyC') {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (!isConnected) {
-            uiLayer.classList.remove('hidden');
-        }
+        if (!isConnected) uiLayer.classList.remove('hidden');
     }
 });

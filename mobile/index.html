@@ -40,20 +40,89 @@
             background: #000;
             pointer-events: none;
         }
-        .controls {
+        .controls-wrapper {
             position: fixed;
             bottom: 30px;
             left: 50%;
             transform: translateX(-50%);
             display: flex;
-            gap: 15px;
+            flex-direction: column;
+            align-items: center;
             background: var(--ui-bg);
-            padding: 12px 20px;
-            border-radius: 40px;
+            border-radius: 20px;
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255,255,255,0.1);
-            align-items: center;
             z-index: 100;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s;
+        }
+        .controls-wrapper.dragging {
+            transition: none;
+            opacity: 0.9;
+        }
+        .controls-wrapper.collapsed .controls-content {
+            display: none;
+        }
+        .controls-wrapper.collapsed .drag-handle {
+            display: none;
+        }
+        .controls-content {
+            display: flex;
+            gap: 12px;
+            padding: 5px 20px 10px 20px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 350px;
+        }
+        .collapsed-tools {
+            display: none;
+            padding: 10px 20px;
+            width: 100%;
+            justify-content: center;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .controls-wrapper.collapsed .collapsed-tools {
+            display: flex;
+        }
+        .drag-handle {
+            width: 100%;
+            height: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: grab;
+            color: rgba(255,255,255,0.4);
+            font-size: 20px;
+            line-height: 1;
+            touch-action: none;
+        }
+        .drag-handle:active {
+            cursor: grabbing;
+            color: rgba(255,255,255,0.8);
+        }
+        .toggle-btn {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.6);
+            font-size: 12px;
+            padding: 4px 20px 6px 20px;
+            cursor: pointer;
+            width: 100%;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            border-bottom-left-radius: 20px;
+            border-bottom-right-radius: 20px;
+        }
+        .controls-wrapper.collapsed {
+            border-radius: 25px;
+        }
+        .controls-wrapper.collapsed .toggle-btn {
+            border-top: none;
+            padding: 12px 20px;
+            border-radius: 25px;
+            font-size: 14px;
+            color: var(--accent);
+            font-weight: 600;
         }
         .btn {
             background: none;
@@ -61,12 +130,13 @@
             color: white;
             font-size: 14px;
             font-weight: 500;
-            padding: 8px 15px;
-            border-radius: 20px;
+            padding: 8px 12px;
+            border-radius: 12px;
             cursor: pointer;
             transition: all 0.2s;
             position: relative;
             z-index: 101;
+            background: rgba(255,255,255,0.05);
         }
         .btn-clear { background: rgba(239, 68, 68, 0.2); color: #f87171; }
         .btn-clear:active { background: rgba(239, 68, 68, 0.4); }
@@ -126,7 +196,7 @@
         }
         #monitor-list.show {
             opacity: 1;
-            pointer-events: all;
+            pointer-events: auto;
             transform: translateX(-50%) translateY(0);
         }
         .monitor-item {
@@ -146,24 +216,31 @@
 </head>
 <body>
     <div class="status">Live Session Active</div>
-    <img id="screen-stream" src="" alt="" draggable="false">
+    <video id="screen-stream" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
 
     <div id="monitor-list">
         <!-- populated dynamically -->
     </div>
 
-    <div class="controls">
-        <button class="btn" id="monitorBtn" title="Select Monitor">🖥️</button>
-        <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.2);"></div>
-        <div class="color-dot active" style="background: #ef4444;" data-color="#ef4444"></div>
-        <div class="color-dot" style="background: #10b981;" data-color="#10b981"></div>
-        <div class="color-dot" style="background: #3b82f6;" data-color="#3b82f6"></div>
-        <div class="color-dot" style="background: #f59e0b;" data-color="#f59e0b"></div>
-        <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.2);"></div>
-        <button class="btn" id="stylusBtn" title="Stylus Mode">✏️</button>
-        <button class="btn" id="fullscreenBtn" title="Fullscreen">⛶</button>
-        <button class="btn btn-clear" id="clearBtn">Clear All</button>
+    <div class="controls-wrapper" id="controlsWrapper">
+        <div class="drag-handle" id="dragHandle">≡</div>
+        <div class="controls-content" id="controlsContent">
+            <button class="btn" id="monitorBtn" title="Select Monitor">🖥️</button>
+            <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.2);"></div>
+            <div class="color-dot active" style="background: #ef4444;" data-color="#ef4444"></div>
+            <div class="color-dot" style="background: #10b981;" data-color="#10b981"></div>
+            <div class="color-dot" style="background: #3b82f6;" data-color="#3b82f6"></div>
+            <div class="color-dot" style="background: #f59e0b;" data-color="#f59e0b"></div>
+            <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.2);"></div>
+            <button class="btn" id="stylusBtn" title="Stylus Mode">✏️</button>
+            <button class="btn" id="fullscreenBtn" title="Fullscreen">⛶</button>
+            <button class="btn btn-clear" id="clearBtn">Clear</button>
+        </div>
+        <div class="collapsed-tools" id="collapsedTools">
+            <button class="btn btn-clear" id="quickClearBtn">🗑️ Quick Clear</button>
+        </div>
+        <button class="toggle-btn" id="toggleBtn">▼ Hide Tools</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
