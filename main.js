@@ -6,6 +6,16 @@ const { Server } = require('socket.io');
 const qrcode = require('qrcode');
 const ip = require('ip');
 
+// HID mouse control via robotjs
+let robot = null;
+try {
+  robot = require('@jitsi/robotjs');
+  robot.setMouseDelay(0); // zero delay for smooth real-time tracking
+  console.log('HID: robotjs loaded ✓');
+} catch (e) {
+  console.warn('HID: robotjs unavailable —', e.message);
+}
+
 let mainWindow;
 let tray = null;
 const expressApp = express();
@@ -141,9 +151,25 @@ function createWindow() {
   });
 }
 
-// Socket.io for real-time drawing + WebRTC signaling
 let connectedClients = 0;
-let activeSocket = null; // Track the active mobile socket for targeted WebRTC signaling
+let activeSocket = null;
+let hidDisplayId = null; // tracks which display HID events should target
+
+function getHidDisplay() {
+  if (hidDisplayId) {
+    const d = screen.getAllDisplays().find(d => d.id === hidDisplayId);
+    if (d) return d;
+  }
+  return screen.getPrimaryDisplay();
+}
+
+function hidCoords(data) {
+  const d = getHidDisplay();
+  return {
+    x: Math.round(data.x * d.bounds.width)  + d.bounds.x,
+    y: Math.round(data.y * d.bounds.height) + d.bounds.y,
+  };
+}
 
 io.on('connection', (socket) => {
   connectedClients++;
@@ -171,6 +197,7 @@ io.on('connection', (socket) => {
 
   // --- Monitor selection ---
   socket.on('select-monitor', (displayId) => {
+    hidDisplayId = parseInt(displayId); // keep HID in sync with selected display
     console.log(`Switching to monitor: ${displayId}`);
     const targetDisplay = screen.getAllDisplays().find(d => d.id === parseInt(displayId));
     
@@ -203,6 +230,79 @@ io.on('connection', (socket) => {
   socket.on('hover-move', (data) => mainWindow.webContents.send('hover-move', data));
   socket.on('hover-end',  ()     => mainWindow.webContents.send('hover-end'));
   socket.on('clear',      ()     => mainWindow.webContents.send('clear'));
+
+  // --- HID events (phone as pen tablet / mouse) ---
+  socket.on('hid-down', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    console.log(`[HID] down at ${x},${y}`);
+    robot.moveMouse(x, y);
+    robot.mouseToggle('down', data.button || 'left');
+  });
+  socket.on('hid-move', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    robot.moveMouse(x, y);
+  });
+  socket.on('hid-up', () => {
+    if (!robot) return;
+    console.log('[HID] up');
+    robot.mouseToggle('up', 'left');
+    robot.mouseToggle('up', 'right');
+  });
+  socket.on('hid-click', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    console.log(`[HID] click ${data.button} at ${x},${y}`);
+    robot.moveMouse(x, y);
+    robot.mouseClick(data.button || 'left', data.double || false);
+  });
+  socket.on('hid-scroll', (data) => {
+    if (!robot) return;
+    console.log(`[HID] scroll ${data.dx},${data.dy}`);
+    robot.scrollMouse(Math.round(data.dx * 5), Math.round(data.dy * 5));
+  });
+  // 2-finger gesture: pinch = zoom (scroll wheel), swipe = pan (scroll)
+  socket.on('hid-gesture', (data) => {
+    if (!robot) return;
+    const zoomTicks = Math.round(data.zoom * 60);
+    if (zoomTicks !== 0) {
+      robot.scrollMouse(0, zoomTicks);
+    } else {
+      const sx = Math.round(data.scrollX * 250);
+      const sy = Math.round(data.scrollY * 250);
+      if (sx !== 0 || sy !== 0) robot.scrollMouse(sx, -sy);
+    }
+  });
+  // 3-finger drag: middle mouse button (Blender orbit / pan)
+  socket.on('hid-middle-down', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    console.log(`[HID] middle-down at ${x},${y}`);
+    robot.moveMouse(x, y);
+    robot.mouseToggle('down', 'middle');
+  });
+  socket.on('hid-middle-move', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    robot.moveMouse(x, y);
+  });
+  socket.on('hid-middle-up', () => {
+    if (!robot) return;
+    console.log('[HID] middle-up');
+    robot.mouseToggle('up', 'middle');
+  });
+  let lastHoverLog = 0;
+  socket.on('hid-hover', (data) => {
+    if (!robot) return;
+    const { x, y } = hidCoords(data);
+    const now = Date.now();
+    if (now - lastHoverLog > 1000) {
+      console.log(`[HID] hover → cursor at ${x},${y}`);
+      lastHoverLog = now;
+    }
+    robot.moveMouse(x, y);
+  });
 
   // --- WebRTC signaling (Mobile → Desktop) ---
   socket.on('signal-answer', (answer) => {

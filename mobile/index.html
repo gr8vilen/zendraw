@@ -175,6 +175,29 @@
             border-radius: 10px;
             backdrop-filter: blur(5px);
         }
+        #hid-indicator {
+            display: none;
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(239,68,68,0.85);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            padding: 6px 18px;
+            border-radius: 20px;
+            z-index: 200;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 0 20px rgba(239,68,68,0.6);
+            animation: pulse-hid 2s ease-in-out infinite;
+        }
+        @keyframes pulse-hid {
+            0%, 100% { box-shadow: 0 0 20px rgba(239,68,68,0.6); }
+            50%       { box-shadow: 0 0 35px rgba(239,68,68,0.9); }
+        }
 
         /* Monitor Selector */
         #monitor-list {
@@ -217,7 +240,8 @@
     </style>
 </head>
 <body>
-    <div class="status">Live Session Active</div>
+    <div class="status" id="draw-status">Live Session Active</div>
+    <div id="hid-indicator">🖱 HID MODE</div>
     <video id="screen-stream" autoplay playsinline muted disablePictureInPicture></video>
     <canvas id="canvas"></canvas>
 
@@ -229,6 +253,14 @@
         <div class="drag-handle" id="dragHandle">≡</div>
         <div class="controls-content" id="controlsContent">
             <button class="btn" id="monitorBtn" title="Select Monitor">🖥️</button>
+            <button class="btn" id="hidBtn" title="HID Mode — Use phone as pen tablet">🖱️</button>
+            <div id="hid-sens-wrap" style="display:none; align-items:center; gap:4px; font-size:10px; color:#fff; opacity:.8;">
+              <span>Sens</span>
+              <input type="range" id="hidSensSlider" min="1" max="30" value="10"
+                style="width:60px; height:4px; accent-color:#ef4444; cursor:pointer;"
+                title="Gesture sensitivity">
+              <span id="hidSensVal">1.0</span>
+            </div>
             <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.2);"></div>
             <div class="color-dot active" style="background: #ef4444;" data-color="#ef4444"></div>
             <div class="color-dot" style="background: #10b981;" data-color="#10b981"></div>

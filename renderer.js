@@ -64,6 +64,7 @@ async function startWebRTC(targetDisplayId = null) {
 
         // Log actual captured resolution to verify
         const vTrack = currentStream.getVideoTracks()[0];
+        vTrack.contentHint = 'motion'; // Prioritize fluidity/low latency over static detail
         const settings = vTrack.getSettings();
         console.log(`[Renderer] Captured at: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
 
@@ -94,7 +95,7 @@ async function startWebRTC(targetDisplayId = null) {
                 if (videoSender) {
                     const p = videoSender.getParameters();
                     if (p.encodings && p.encodings.length > 0) {
-                        p.encodings[0].maxBitrate            = 20_000_000; // 20 Mbps
+                        p.encodings[0].maxBitrate            = 5_000_000; // 5 Mbps (prevents bufferbloat lag)
                         p.encodings[0].maxFramerate          = 60;
                         p.encodings[0].scaleResolutionDownBy = 1;          // no downscaling
                         videoSender.setParameters(p)

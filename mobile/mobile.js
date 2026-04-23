@@ -7,12 +7,27 @@ const stylusBtn = document.getElementById('stylusBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const monitorBtn = document.getElementById('monitorBtn');
 const monitorList = document.getElementById('monitor-list');
+const hidBtn = document.getElementById('hidBtn');
+const hidIndicator = document.getElementById('hid-indicator');
+const drawStatus = document.getElementById('draw-status');
 
 let isDrawing = false;
 let currentColor = '#ef4444';
 let currentSize = 8;
 let isStylusMode = false;
 let currentMonitorId = null;
+
+// HID mode state
+let isHidMode       = false;
+let hidIsDown       = false;
+let hidSensitivity  = 1.0;   // gesture scroll/zoom multiplier (0.1 – 3.0)
+let gestureLock     = null;  // 'pinch' | 'scroll' — locks per gesture session
+
+// Multi-touch tracking
+const activePointers  = new Map();  // pointerId → {x, y, type}
+const PALM_MIN_SIZE   = 40;         // CSS px — contacts wider than this = palm
+let gestureState      = null;
+let isMiddleDragging  = false;
 
 // ------------------------------------------------------------------
 // WEBRTC STREAM RECEIVER
@@ -29,12 +44,16 @@ socket.on('signal-offer', async (offer) => {
 
     mobilePc.ontrack = (event) => {
         console.log('WebRTC: track received, streams:', event.streams.length);
+
+        // Minimize RTP jitter buffer — cuts 100-200ms off baseline latency
+        if (event.receiver && 'jitterBufferTarget' in event.receiver) {
+            event.receiver.jitterBufferTarget = 0;
+        }
+
         const stream = (event.streams && event.streams[0])
             ? event.streams[0]
             : new MediaStream([event.track]);
         screenStream.srcObject = stream;
-        // Explicit play() is required — autoplay attribute alone is unreliable for
-        // programmatically-assigned srcObject on mobile browsers
         screenStream.play().catch(err => console.warn('Video play failed:', err));
     };
 
@@ -157,9 +176,63 @@ function getCanvasCoords(e) {
     };
 }
 
+// ---- Multi-touch helpers (HID mode) ----
+function isPalm(e) {
+    // Contacts larger than PALM_MIN_SIZE = palm, not fingertip or stylus
+    return e.pointerType === 'touch' && (e.width > PALM_MIN_SIZE || e.height > PALM_MIN_SIZE);
+}
+function touchPtrs() { return [...activePointers.values()].filter(p => p.type === 'touch'); }
+function penPtr()    { return [...activePointers.values()].find(p  => p.type === 'pen'); }
+function centroid(pts) {
+    return { x: pts.reduce((s,p) => s+p.x,0)/pts.length, y: pts.reduce((s,p) => s+p.y,0)/pts.length };
+}
+function dist2(p1, p2) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    return Math.sqrt(dx*dx + dy*dy);
+}
+
 let isErasing = false;
 
 canvas.addEventListener('pointerdown', (e) => {
+    // ---- HID mode: multi-touch routing ----
+    if (isHidMode) {
+        if (isPalm(e)) { e.preventDefault(); return; }
+        const { x, y } = getCanvasCoords(e);
+        activePointers.set(e.pointerId, { x, y, type: e.pointerType });
+        const touches = touchPtrs();
+        const pen     = penPtr();
+
+        if (e.pointerType === 'pen') {
+            if (e.button === 2 || (e.buttons & 2)) {
+                // Pen side button → right-click
+                socket.emit('hid-click', { x, y, button: 'right' });
+                activePointers.delete(e.pointerId);
+            } else {
+                hidIsDown = true;
+                socket.emit('hid-down', { x, y, button: 'left' });
+            }
+        } else if (touches.length === 1 && !pen) {
+            // First finger → left-click / drag
+            hidIsDown = true;
+            socket.emit('hid-down', { x, y, button: 'left' });
+        } else if (touches.length === 2) {
+            // Second finger → cancel drag, start 2-finger gesture
+            if (hidIsDown) { socket.emit('hid-up'); hidIsDown = false; }
+            gestureState = null;
+        } else if (touches.length >= 3) {
+            // Third+ finger → middle-button drag (Blender orbit/pan)
+            if (hidIsDown) { socket.emit('hid-up'); hidIsDown = false; }
+            if (!isMiddleDragging) {
+                const c = centroid(touches);
+                isMiddleDragging = true;
+                socket.emit('hid-middle-down', { x: c.x, y: c.y });
+            }
+        }
+        e.preventDefault();
+        return;
+    }
+
+    // ---- Draw mode ----
     socket.emit('log-pen', { type: e.pointerType, button: e.button, buttons: e.buttons });
 
     if (isStylusMode && e.pointerType !== 'pen') return;
@@ -202,6 +275,72 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
     const { x, y } = getCanvasCoords(e);
 
+    // ---- HID mode: Wacom-tablet absolute positioning + gestures ----
+    if (isHidMode) {
+        if (isPalm(e)) return;
+
+        // Pointer NOT in map = pen hover (no pointerdown before hover) — emit directly
+        if (!activePointers.has(e.pointerId)) {
+            socket.emit('hid-hover', { x, y });
+            return;
+        }
+
+        const pt = activePointers.get(e.pointerId);
+        pt.x = x; pt.y = y;
+
+        const touches = touchPtrs();
+        const pen     = penPtr();
+
+        // Pen always takes priority
+        if (pen) {
+            hidIsDown ? socket.emit('hid-move',  { x: pen.x, y: pen.y })
+                      : socket.emit('hid-hover', { x: pen.x, y: pen.y });
+            return;
+        }
+
+        const n = touches.length;
+        if (n === 0) return;
+
+        if (n === 1) {
+            // Single finger — cursor follows (absolute, Wacom-style)
+            gestureLock  = null;
+            gestureState = null;
+            hidIsDown ? socket.emit('hid-move',  { x: touches[0].x, y: touches[0].y })
+                      : socket.emit('hid-hover', { x: touches[0].x, y: touches[0].y });
+
+        } else if (n === 2) {
+            // 2 fingers — lock to pinch OR scroll on first significant movement
+            const c = centroid(touches);
+            const d = dist2(touches[0], touches[1]);
+            if (gestureState) {
+                const dDist   = d - gestureState.dist;
+                const dx      = c.x - gestureState.center.x;
+                const dy      = c.y - gestureState.center.y;
+                const dCenter = Math.sqrt(dx*dx + dy*dy);
+
+                // Determine or enforce gesture lock
+                if (!gestureLock && (Math.abs(dDist) > 0.002 || dCenter > 0.002)) {
+                    gestureLock = Math.abs(dDist) * 1.5 > dCenter ? 'pinch' : 'scroll';
+                }
+                if (gestureLock === 'pinch') {
+                    socket.emit('hid-gesture', { zoom: dDist * hidSensitivity, scrollX: 0, scrollY: 0 });
+                } else if (gestureLock === 'scroll' && dCenter > 0.001) {
+                    socket.emit('hid-gesture', { zoom: 0, scrollX: dx * hidSensitivity, scrollY: dy * hidSensitivity });
+                }
+            }
+            gestureState = { center: c, dist: d };
+
+        } else {
+            // 3+ fingers — middle-button drag (Blender orbit/pan)
+            const c = centroid(touches.slice(0, 3));
+            isMiddleDragging
+                ? socket.emit('hid-middle-move', { x: c.x, y: c.y })
+                : (isMiddleDragging = true, socket.emit('hid-middle-down', { x: c.x, y: c.y }));
+        }
+        return;
+    }
+
+    // ---- Draw mode ----
     if (!isDrawing) {
         if (e.pointerType === 'pen') {
             socket.emit('hover-move', { x, y, color: currentColor });
@@ -219,14 +358,29 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 ['pointerup', 'pointerleave', 'pointerout', 'pointercancel'].forEach(evt => {
-    canvas.addEventListener(evt, () => {
+    canvas.addEventListener(evt, (e) => {
+        // ---- HID mode ----
+        if (isHidMode) {
+            activePointers.delete(e.pointerId);
+            const touches = touchPtrs();
+            if (hidIsDown && (e.pointerType === 'pen' || touches.length === 0)) {
+                socket.emit('hid-up'); hidIsDown = false;
+            }
+            if (isMiddleDragging && touches.length < 3) {
+                socket.emit('hid-middle-up'); isMiddleDragging = false;
+            }
+            if (touches.length < 2) { gestureLock = null; gestureState = null; }
+            return;
+        }
+
+        // ---- Draw mode ----
         socket.emit('hover-end');
         if (!isDrawing) return;
         if (evt === 'pointerup') {
             isDrawing = false;
             socket.emit('draw-end');
             ctx.closePath();
-            ctx.globalCompositeOperation = 'source-over'; // reset back to normal
+            ctx.globalCompositeOperation = 'source-over';
             isErasing = false;
         }
     });
@@ -275,6 +429,23 @@ fullscreenBtn.addEventListener('click', () => {
 clearBtn.addEventListener('click', () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     socket.emit('clear');
+});
+
+hidBtn.addEventListener('click', () => {
+    isHidMode = !isHidMode;
+    hidBtn.classList.toggle('active', isHidMode);
+    hidIndicator.style.display = isHidMode ? 'block' : 'none';
+    drawStatus.style.display   = isHidMode ? 'none'  : 'block';
+    document.getElementById('hid-sens-wrap').style.display = isHidMode ? 'flex' : 'none';
+    if (!isHidMode && hidIsDown) { socket.emit('hid-up'); hidIsDown = false; }
+    if (!isHidMode) { activePointers.clear(); gestureLock = null; gestureState = null; }
+});
+
+const hidSensSlider = document.getElementById('hidSensSlider');
+const hidSensVal    = document.getElementById('hidSensVal');
+hidSensSlider.addEventListener('input', () => {
+    hidSensitivity = hidSensSlider.value / 10;
+    hidSensVal.textContent = hidSensitivity.toFixed(1);
 });
 
 monitorBtn.addEventListener('click', (e) => {
