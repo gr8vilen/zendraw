@@ -25,6 +25,7 @@ let pc = null;
 let currentStream = null;
 let currentMonitorId = null;
 
+
 async function startWebRTC(targetDisplayId = null) {
     if (pc) { pc.close(); pc = null; }
     if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
@@ -38,21 +39,46 @@ async function startWebRTC(targetDisplayId = null) {
         if (!selectedSource) selectedSource = sources[0];
         console.log(`[Renderer] WebRTC: using source "${selectedSource.name}"`);
 
+        // Get actual display info to force physical pixel capture on Retina/HiDPI displays
+        const displayInfo = await ipcRenderer.invoke('get-display-info', targetDisplayId);
+        const scaleFactor = displayInfo.scaleFactor || 1;
+        const physW = Math.round(displayInfo.width  * scaleFactor);
+        const physH = Math.round(displayInfo.height * scaleFactor);
+        console.log(`[Renderer] Display logical: ${displayInfo.width}x${displayInfo.height}, scaleFactor: ${scaleFactor}, physical target: ${physW}x${physH}`);
+
+        // Pass physical pixel dimensions — forces Chromium to capture at native res on Retina
         currentStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
                 mandatory: {
                     chromeMediaSource: 'desktop',
                     chromeMediaSourceId: selectedSource.id,
-                    maxFrameRate: 25,
+                    minWidth:  physW,
+                    minHeight: physH,
+                    maxWidth:  physW,
+                    maxHeight: physH,
+                    maxFrameRate: 60,
                 }
             }
         });
 
+        // Log actual captured resolution to verify
+        const vTrack = currentStream.getVideoTracks()[0];
+        const settings = vTrack.getSettings();
+        console.log(`[Renderer] Captured at: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
+
         pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
-        currentStream.getTracks().forEach(track => pc.addTrack(track, currentStream));
+
+        // Use addTrack (sendrecv) — addTransceiver+sendonly breaks msid association
+        // causing event.streams[0] to be undefined on mobile → black screen.
+        // Post-negotiation setParameters() IS valid for bitrate/resolution control.
+        let videoSender = null;
+        for (const track of currentStream.getTracks()) {
+            const sender = pc.addTrack(track, currentStream);
+            if (track.kind === 'video') videoSender = sender;
+        }
 
         // Trickle ICE: send candidates as they are found
         pc.onicecandidate = ({ candidate }) => {
@@ -63,6 +89,20 @@ async function startWebRTC(targetDisplayId = null) {
 
         pc.onconnectionstatechange = () => {
             console.log(`[Renderer] WebRTC state: ${pc.connectionState}`);
+            if (pc.connectionState === 'connected') {
+                // Post-negotiation setParameters is reliable — transactionId exists now
+                if (videoSender) {
+                    const p = videoSender.getParameters();
+                    if (p.encodings && p.encodings.length > 0) {
+                        p.encodings[0].maxBitrate            = 20_000_000; // 20 Mbps
+                        p.encodings[0].maxFramerate          = 60;
+                        p.encodings[0].scaleResolutionDownBy = 1;          // no downscaling
+                        videoSender.setParameters(p)
+                            .then(() => console.log('[Renderer] Encoding params locked post-negotiation'))
+                            .catch(e  => console.warn('[Renderer] setParameters failed:', e.message));
+                    }
+                }
+            }
             if (pc.connectionState === 'failed') {
                 console.warn('[Renderer] WebRTC failed, retrying in 2s...');
                 setTimeout(() => startWebRTC(currentMonitorId), 2000);
@@ -116,7 +156,8 @@ ipcRenderer.on('connection-status', (event, { connected, count }) => {
         statusBadge.classList.remove('hidden');
         uiLayer.classList.add('hidden');
         // Small delay ensures mobile JS is ready to receive the offer
-        setTimeout(() => startWebRTC(currentMonitorId), 500);
+        // Minimal delay — just enough for mobile socket listener to register
+        setTimeout(() => startWebRTC(currentMonitorId), 100);
     } else {
         connectionInfo.classList.remove('hidden');
         statusBadge.classList.add('hidden');

@@ -107,6 +107,19 @@ function createWindow() {
     return await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
   });
 
+  ipcMain.handle('get-display-info', async (event, targetDisplayId) => {
+    const displays = screen.getAllDisplays();
+    let display = targetDisplayId
+      ? displays.find(d => d.id === parseInt(targetDisplayId))
+      : screen.getPrimaryDisplay();
+    if (!display) display = screen.getPrimaryDisplay();
+    return {
+      width:       display.size.width,
+      height:      display.size.height,
+      scaleFactor: display.scaleFactor,
+    };
+  });
+
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
     console.log(`[Renderer] ${message}`);
   });
@@ -148,9 +161,11 @@ io.on('connection', (socket) => {
   }));
 
   const primaryDisplay = screen.getPrimaryDisplay();
+  const scaleFactor = primaryDisplay.scaleFactor || 1;
   socket.emit('init', {
     width: primaryDisplay.size.width,
     height: primaryDisplay.size.height,
+    scaleFactor,
     displays: displays
   });
 

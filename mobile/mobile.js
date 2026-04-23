@@ -28,8 +28,14 @@ socket.on('signal-offer', async (offer) => {
     });
 
     mobilePc.ontrack = (event) => {
-        console.log('WebRTC: track received, attaching to video');
-        screenStream.srcObject = event.streams[0];
+        console.log('WebRTC: track received, streams:', event.streams.length);
+        const stream = (event.streams && event.streams[0])
+            ? event.streams[0]
+            : new MediaStream([event.track]);
+        screenStream.srcObject = stream;
+        // Explicit play() is required — autoplay attribute alone is unreliable for
+        // programmatically-assigned srcObject on mobile browsers
+        screenStream.play().catch(err => console.warn('Video play failed:', err));
     };
 
     mobilePc.onicecandidate = ({ candidate }) => {

@@ -36,9 +36,11 @@
             height: 100%;
             object-fit: contain;
             z-index: 1;
-            opacity: 0.8;
             background: #000;
             pointer-events: none;
+            will-change: transform;
+            /* Compensate for limited YUV color range in WebRTC — restores vivid colors */
+            filter: contrast(1.08) saturate(1.15) brightness(1.03);
         }
         .controls-wrapper {
             position: fixed;
@@ -216,7 +218,7 @@
 </head>
 <body>
     <div class="status">Live Session Active</div>
-    <video id="screen-stream" autoplay playsinline muted></video>
+    <video id="screen-stream" autoplay playsinline muted disablePictureInPicture></video>
     <canvas id="canvas"></canvas>
 
     <div id="monitor-list">
